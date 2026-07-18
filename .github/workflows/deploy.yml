@@ -9,62 +9,76 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Lint with flake8
-      run: 'pip install flake8
-
+      run: |
+        pip install flake8
         flake8 app/ --max-line-length=120 --ignore=E501,W503
 
-        '
   provision:
     runs-on: ubuntu-latest
-    needs:
-    - lint
+    needs: [lint]
+    outputs:
+      ec2_public_ip: ${{ steps.tf_outputs.outputs.ec2_public_ip }}
+      rds_host: ${{ steps.tf_outputs.outputs.rds_host }}
     steps:
     - uses: actions/checkout@v4
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: "1.8.5"
+        terraform_wrapper: false
     - name: Terraform init & apply
-      run: "cd infra\nterraform init \\\n  -backend-config=\"bucket=${{ secrets.TF_STATE_BUCKET\
-        \ }}\" \\\n  -backend-config=\"key=myshortner01/terraform.tfstate\" \\\n \
-        \ -backend-config=\"region=us-east-1\"\nterraform apply -auto-approve \\\n\
-        \  -var=\"project_name=${{ secrets.PROJECT_NAME }}\" \\\n  -var=\"db_password=${{\
-        \ secrets.DB_PASSWORD }}\" \\\n  -var=\"ssh_public_key=${{ secrets.SSH_PUBLIC_KEY\
-        \ }}\"\n"
-    - name: Export outputs
-      run: 'cd infra
+      run: |
+        cd infra
+        terraform init \
+          -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+          -backend-config="key=myshortner01/terraform.tfstate" \
+          -backend-config="region=us-east-1"
+        terraform apply -auto-approve \
+          -var="project_name=${{ secrets.PROJECT_NAME }}" \
+          -var="db_password=${{ secrets.DB_PASSWORD }}" \
+          -var="ssh_public_key=${{ secrets.SSH_PUBLIC_KEY }}"
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    - name: Export TF outputs
+      id: tf_outputs
+      run: |
+        cd infra
+        echo "ec2_public_ip=$(terraform output -raw ec2_public_ip)" >> $GITHUB_OUTPUT
+        echo "rds_host=$(terraform output -raw rds_host)" >> $GITHUB_OUTPUT
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
-        echo "EC2_PUBLIC_IP=$(terraform output -raw ec2_public_ip)" >> $GITHUB_ENV
-
-        echo "RDS_HOST=$(terraform output -raw rds_host)" >> $GITHUB_ENV
-
-        '
   configure:
     runs-on: ubuntu-latest
-    needs:
-    - provision
+    needs: [provision]
     steps:
     - uses: actions/checkout@v4
     - name: Write SSH key
-      run: 'mkdir -p ~/.ssh
-
+      run: |
+        mkdir -p ~/.ssh
         echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
-
         chmod 600 ~/.ssh/deploy_key
-
-        '
+        ssh-keyscan -H ${{ needs.provision.outputs.ec2_public_ip }} >> ~/.ssh/known_hosts 2>/dev/null || true
     - name: Install Ansible
       run: pip install ansible
     - name: Run Ansible playbook
-      run: "cd ansible\nsed -i \"s/{{ ec2_public_ip }}/$EC2_PUBLIC_IP/\" inventory.ini\n\
-        ansible-playbook -i inventory.ini playbook.yml \\\n  -e \"db_host=$RDS_HOST\"\
-        \ \\\n  -e \"db_password=${{ secrets.DB_PASSWORD }}\" \\\n  -e \"project_name=${{\
-        \ secrets.PROJECT_NAME }}\"\n"
+      run: |
+        cd ansible
+        sed -i "s|{{ ec2_public_ip }}|${{ needs.provision.outputs.ec2_public_ip }}|"\ inventory.ini
+        ansible-playbook -i inventory.ini playbook.yml \
+          --private-key ~/.ssh/deploy_key \
+          -e "db_host=${{ needs.provision.outputs.rds_host }}" \
+          -e "db_password=${{ secrets.DB_PASSWORD }}" \
+          -e "project_name=${{ secrets.PROJECT_NAME }}"
+
   verify:
     runs-on: ubuntu-latest
-    needs:
-    - configure
+    needs: [provision, configure]
     steps:
     - uses: actions/checkout@v4
     - name: Health check
-      run: 'sleep 20
-
-        curl -f http://$EC2_PUBLIC_IP/health || exit 1
-
-        '
+      run: |
+        sleep 20
+        curl -f http://${{ needs.provision.outputs.ec2_public_ip }}/health || exit 1
