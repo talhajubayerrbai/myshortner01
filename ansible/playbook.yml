@@ -9,7 +9,7 @@
     venv_dir: /opt/myshortner01/venv
 
   tasks:
-    # ── System packages ───────────────────────────────────────────────────
+    # ── System packages ──────────────────────────────────────────────────────
     - name: Update apt cache
       apt:
         update_cache: yes
@@ -26,9 +26,10 @@
           - nginx
           - git
           - curl
+          - acl
         state: present
 
-    # ── App user ──────────────────────────────────────────────────────────
+    # ── App user ────────────────────────────────────────────────────────────
     - name: Create app user
       user:
         name: "{{ app_user }}"
@@ -37,7 +38,7 @@
         home: "{{ app_dir }}"
         create_home: yes
 
-    # ── Application code ──────────────────────────────────────────────────
+    # ── Application code ────────────────────────────────────────────────────
     - name: Create app directory
       file:
         path: "{{ app_dir }}"
@@ -68,7 +69,7 @@
         group: "{{ app_user }}"
         recurse: yes
 
-    # ── Python virtualenv + dependencies ──────────────────────────────────
+    # ── Python virtualenv + dependencies ────────────────────────────────────────────
     - name: Create virtualenv
       command: "python3 -m venv {{ venv_dir }}"
       args:
@@ -83,7 +84,7 @@
       become_user: "{{ app_user }}"
       notify: Restart shortener
 
-    # ── Environment file ──────────────────────────────────────────────────
+    # ── Environment file ───────────────────────────────────────────────────────────
     - name: Write .env file
       copy:
         dest: "{{ app_dir }}/.env"
@@ -100,7 +101,7 @@
           DATABASE_URL=postgresql://shortener:{{ db_password }}@{{ db_host }}:5432/shortener
       notify: Restart shortener
 
-    # ── Database migration ────────────────────────────────────────────────
+    # ── Database migration ────────────────────────────────────────────────────────────
     - name: Run Alembic migrations
       command: "{{ venv_dir }}/bin/alembic upgrade head"
       args:
@@ -109,7 +110,7 @@
         DATABASE_URL: "postgresql://shortener:{{ db_password }}@{{ db_host }}:5432/shortener"
       become_user: "{{ app_user }}"
 
-    # ── Systemd service ───────────────────────────────────────────────────
+    # ── Systemd service ─────────────────────────────────────────────────────────────
     - name: Write systemd unit
       copy:
         dest: /etc/systemd/system/shortener.service
@@ -123,11 +124,11 @@
           Group={{ app_user }}
           WorkingDirectory={{ app_dir }}
           EnvironmentFile={{ app_dir }}/.env
-          ExecStart={{ venv_dir }}/bin/gunicorn app.main:app \
-              --workers 2 \
-              --worker-class uvicorn.workers.UvicornWorker \
-              --bind 127.0.0.1:8000 \
-              --access-logfile /var/log/shortener/access.log \
+          ExecStart={{ venv_dir }}/bin/gunicorn app.main:app \\
+              --workers 2 \\
+              --worker-class uvicorn.workers.UvicornWorker \\
+              --bind 127.0.0.1:8000 \\
+              --access-logfile /var/log/shortener/access.log \\
               --error-logfile /var/log/shortener/error.log
           Restart=always
           RestartSec=5
@@ -151,7 +152,7 @@
         state: started
         daemon_reload: yes
 
-    # ── Nginx reverse proxy ───────────────────────────────────────────────
+    # ── Nginx reverse proxy ──────────────────────────────────────────────────────────
     - name: Write nginx site config
       copy:
         dest: /etc/nginx/sites-available/shortener
