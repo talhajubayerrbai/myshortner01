@@ -2,7 +2,6 @@ from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from app.config import settings
 from app.database import Base, engine, get_db
 from app.routers import links
 from app.schemas import HealthResponse
