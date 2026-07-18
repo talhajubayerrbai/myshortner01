@@ -1,0 +1,10 @@
+# udap:meta cloud=aws region=us-east-1 target=ec2
+
+user: User { shape: rectangle; udap-type: generic.user }
+vpc: VPC {
+  ec2: App Server (EC2) { shape: rectangle; udap-type: aws.ec2 }
+  rds: Postgres (RDS) { shape: rectangle; udap-type: aws.rds }
+}
+
+user -> vpc.ec2: HTTPS / HTTP (FastAPI)
+vpc.ec2 -> vpc.rds: SQL (port 5432)

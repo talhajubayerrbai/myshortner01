@@ -1,0 +1,65 @@
+version: 1
+name: myshortner01
+vcs: github
+stages:
+  - id: lint
+    kind: lint
+    needs: []
+    steps:
+      - name: Lint with flake8
+        run: |
+          pip install flake8
+          flake8 app/ --max-line-length=120 --ignore=E501,W503
+
+  - id: provision
+    kind: provision
+    needs: [lint]
+    steps:
+      - name: Terraform init & apply
+        run: |
+          cd infra
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=myshortner01/terraform.tfstate" \
+            -backend-config="region=us-east-1"
+          terraform apply -auto-approve \
+            -var="project_name=${{ secrets.PROJECT_NAME }}" \
+            -var="db_password=${{ secrets.DB_PASSWORD }}" \
+            -var="ssh_public_key=${{ secrets.SSH_PUBLIC_KEY }}"
+      - name: Export outputs
+        run: |
+          cd infra
+          echo "EC2_PUBLIC_IP=$(terraform output -raw ec2_public_ip)" >> $GITHUB_ENV
+          echo "RDS_HOST=$(terraform output -raw rds_host)" >> $GITHUB_ENV
+
+  - id: configure
+    kind: configure
+    needs: [provision]
+    steps:
+      - name: Write SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+      - name: Install Ansible
+        run: pip install ansible
+      - name: Run Ansible playbook
+        run: |
+          cd ansible
+          sed -i "s/{{ ec2_public_ip }}/$EC2_PUBLIC_IP/" inventory.ini
+          ansible-playbook -i inventory.ini playbook.yml \
+            -e "db_host=$RDS_HOST" \
+            -e "db_password=${{ secrets.DB_PASSWORD }}" \
+            -e "project_name=${{ secrets.PROJECT_NAME }}"
+
+  - id: verify
+    kind: verify
+    needs: [configure]
+    steps:
+      - name: Health check
+        run: |
+          sleep 20
+          curl -f http://$EC2_PUBLIC_IP/health || exit 1
+
+rollback:
+  strategy: manual
