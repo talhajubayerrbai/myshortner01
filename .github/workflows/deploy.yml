@@ -18,7 +18,6 @@ jobs:
     needs: [lint]
     outputs:
       ec2_public_ip: ${{ steps.tf_outputs.outputs.ec2_public_ip }}
-      rds_host_b64: ${{ steps.tf_outputs.outputs.rds_host_b64 }}
     steps:
     - uses: actions/checkout@v4
     - name: Setup Terraform
@@ -29,7 +28,7 @@ jobs:
     - name: Terraform init & apply
       run: |
         cd infra
-        terraform init -reconfigure \
+        terraform init \
           -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
           -backend-config="key=myshortner01/terraform.tfstate" \
           -backend-config="region=us-east-1"
@@ -45,10 +44,7 @@ jobs:
       run: |
         cd infra
         EC2_IP=$(terraform output -raw ec2_public_ip)
-        RDS_HOSTNAME=$(terraform output -raw rds_host)
         echo "ec2_public_ip=${EC2_IP}" >> $GITHUB_OUTPUT
-        # base64-encode to prevent GHA secret masking on hostnames that match secret patterns
-        echo "rds_host_b64=$(echo -n ${RDS_HOSTNAME} | base64 -w0)" >> $GITHUB_OUTPUT
       env:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -58,18 +54,40 @@ jobs:
     needs: [provision]
     steps:
     - uses: actions/checkout@v4
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: "1.8.5"
+        terraform_wrapper: false
+    - name: Read TF outputs
+      id: tf_outputs
+      run: |
+        cd infra
+        terraform init \
+          -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+          -backend-config="key=myshortner01/terraform.tfstate" \
+          -backend-config="region=us-east-1" \
+          -reconfigure
+        # Write to a local env file to avoid GHA secret masking
+        terraform output -raw ec2_public_ip > /tmp/ec2_ip.txt
+        terraform output -raw rds_host > /tmp/rds_host.txt
+        echo "ec2_public_ip=$(cat /tmp/ec2_ip.txt)" >> $GITHUB_OUTPUT
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
     - name: Write SSH key
       run: |
         mkdir -p ~/.ssh
         echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
         chmod 600 ~/.ssh/deploy_key
-        ssh-keyscan -H ${{ needs.provision.outputs.ec2_public_ip }} >> ~/.ssh/known_hosts 2>/dev/null || true
+        EC2_IP=$(cat /tmp/ec2_ip.txt)
+        ssh-keyscan -H ${EC2_IP} >> ~/.ssh/known_hosts 2>/dev/null || true
     - name: Install Ansible
       run: pip install ansible
     - name: Run Ansible playbook
       run: |
-        EC2_IP="${{ needs.provision.outputs.ec2_public_ip }}"
-        RDS_HOST=$(echo "${{ needs.provision.outputs.rds_host_b64 }}" | base64 -d)
+        EC2_IP=$(cat /tmp/ec2_ip.txt)
+        RDS_HOST=$(cat /tmp/rds_host.txt)
         cd ansible
         sed -i "s|{{ ec2_public_ip }}|${EC2_IP}|" inventory.ini
         ansible-playbook -i inventory.ini playbook.yml \
