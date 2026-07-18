@@ -18,7 +18,7 @@ jobs:
     needs: [lint]
     outputs:
       ec2_public_ip: ${{ steps.tf_outputs.outputs.ec2_public_ip }}
-      rds_host: ${{ steps.tf_outputs.outputs.rds_host }}
+      rds_host_b64: ${{ steps.tf_outputs.outputs.rds_host_b64 }}
     steps:
     - uses: actions/checkout@v4
     - name: Setup Terraform
@@ -29,7 +29,7 @@ jobs:
     - name: Terraform init & apply
       run: |
         cd infra
-        terraform init -reconfigure \
+        terraform init \
           -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
           -backend-config="key=myshortner01/terraform.tfstate" \
           -backend-config="region=us-east-1"
@@ -44,8 +44,11 @@ jobs:
       id: tf_outputs
       run: |
         cd infra
-        echo "ec2_public_ip=$(terraform output -raw ec2_public_ip)" >> $GITHUB_OUTPUT
-        echo "rds_host=$(terraform output -raw rds_host)" >> $GITHUB_OUTPUT
+        EC2_IP=$(terraform output -raw ec2_public_ip)
+        RDS_HOSTNAME=$(terraform output -raw rds_host)
+        echo "ec2_public_ip=${EC2_IP}" >> $GITHUB_OUTPUT
+        # base64-encode to prevent GHA secret masking on hostnames that match secret patterns
+        echo "rds_host_b64=$(echo -n ${RDS_HOSTNAME} | base64 -w0)" >> $GITHUB_OUTPUT
       env:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -65,11 +68,13 @@ jobs:
       run: pip install ansible
     - name: Run Ansible playbook
       run: |
+        EC2_IP="${{ needs.provision.outputs.ec2_public_ip }}"
+        RDS_HOST=$(echo "${{ needs.provision.outputs.rds_host_b64 }}" | base64 -d)
         cd ansible
-        sed -i "s|{{ ec2_public_ip }}|${{ needs.provision.outputs.ec2_public_ip }}|"\ inventory.ini
+        sed -i "s|{{ ec2_public_ip }}|${EC2_IP}|" inventory.ini
         ansible-playbook -i inventory.ini playbook.yml \
           --private-key ~/.ssh/deploy_key \
-          -e "db_host=${{ needs.provision.outputs.rds_host }}" \
+          -e "db_host=${RDS_HOST}" \
           -e "db_password=${{ secrets.DB_PASSWORD }}" \
           -e "project_name=${{ secrets.PROJECT_NAME }}"
 
