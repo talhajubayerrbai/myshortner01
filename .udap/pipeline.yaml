@@ -18,7 +18,7 @@ stages:
       - name: Terraform init & apply
         run: |
           cd infra
-          terraform init \
+          terraform init -reconfigure \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="key=myshortner01/terraform.tfstate" \
             -backend-config="region=us-east-1"
